@@ -17,6 +17,12 @@ from ._llm import (
     azure_openai_embedding,
     azure_gpt_4o_mini_complete,
 )
+from .local_llm import (
+    local_gpt_4o_complete,
+    local_gpt_4o_mini_complete,
+    local_gpt_35_turbo_complete,
+)
+from .local_embedding import local_embedding
 from ._op import (
     chunking_by_token_size,
     extract_entities,
@@ -107,7 +113,7 @@ class HiRAG:
     )
 
     # text embedding
-    embedding_func: EmbeddingFunc = field(default_factory=lambda: openai_embedding)
+    embedding_func: EmbeddingFunc = field(default_factory=lambda: local_embedding)
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 8
     query_better_than_threshold: float = 0.2
@@ -115,10 +121,10 @@ class HiRAG:
     # LLM
     using_azure_openai: bool = False
     # best_model_func: callable = gpt_35_turbo_complete
-    best_model_func: callable = gpt_4o_mini_complete
+    best_model_func: callable = local_gpt_4o_mini_complete
     best_model_max_token_size: int = 32768
     best_model_max_async: int = 8
-    cheap_model_func: callable = gpt_35_turbo_complete
+    cheap_model_func: callable = local_gpt_35_turbo_complete
     cheap_model_max_token_size: int = 32768
     cheap_model_max_async: int = 8
 
