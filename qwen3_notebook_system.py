@@ -1,8 +1,8 @@
 """
-HiRAG System with Qwen3 8B for Notebook Environment
+HiRAG System with Qwen3 8B for H100 GPU in Notebook Environment
 This script provides a complete system for using Qwen3 8B model and embedding models from Hugging Face
-in the HiRAG framework. It includes progress bars and timing for each step, with lazy model loading
-to work in notebook environments.
+in the HiRAG framework. It includes progress bars and timing for each step, optimized for H100 GPU,
+with lazy model loading to work in notebook environments.
 """
 import asyncio
 import json
@@ -26,8 +26,8 @@ class Qwen3HiRAGConfig:
     """
     # Model configurations
     llm_model_name: str = "Qwen/Qwen3-8B"  # Using the base Qwen3 8B model (not instruct)
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"  # Suitable embedding model
-    embedding_dimension: int = 384  # Dimension of the embedding model (all-MiniLM-L6-v2 has 384)
+    embedding_model_name: str = "sentence-transformers/all-mpnet-base-v2"  # Better embedding model for H100
+    embedding_dimension: int = 768  # Dimension of the embedding model (all-mpnet-base-v2 has 768)
     
     # HiRAG configurations
     working_dir: str = "./hirag_cache_qwen3_notebook"
@@ -109,20 +109,33 @@ class Qwen3HiRAG:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Use CPU for compatibility in notebook environments
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.llm_model_name,
-            torch_dtype=torch.float32,  # Use float32 for CPU
-            device_map="cpu"  # Use CPU to avoid CUDA issues
-        )
+        # Use GPU (H100) for optimal performance in notebook environments
+        import torch
+        if torch.cuda.is_available():
+            print(f"Using GPU: {torch.cuda.get_device_name()}")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.llm_model_name,
+                torch_dtype=torch.bfloat16,  # Use bfloat16 for H100 optimization
+                device_map="auto",  # Automatically use available GPU
+                trust_remote_code=True
+            )
+        else:
+            print("GPU not available, using CPU")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.llm_model_name,
+                torch_dtype=torch.float32,
+                device_map="cpu"
+            )
         model_init_time = time.time() - start_time
         print(f"Model initialization completed in {model_init_time:.2f} seconds")
         
         # Initialize embedding model
         start_time = time.time()
-        self.embedding_model = SentenceTransformer(self.config.embedding_model_name)
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.embedding_model = SentenceTransformer(self.config.embedding_model_name, device=device)
         embedding_init_time = time.time() - start_time
-        print(f"Embedding model initialization completed in {embedding_init_time:.2f} seconds")
+        print(f"Embedding model initialization completed in {embedding_init_time:.2f} seconds on {device}")
     
     def _create_qwen3_completion(self):
         """Create completion function for Qwen3 model"""
@@ -321,13 +334,13 @@ async def query_with_progress(hirag_instance, query_text: str, query_param=None)
 
 def run_notebook_pipeline(
     llm_model_name: str = "Qwen/Qwen3-8B",
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    embedding_model_name: str = "sentence-transformers/all-mpnet-base-v2",
     data_file: str = "/workspace/eval/datasets/cs/cs_unique_contexts.json",
     num_contexts: int = 10,
     queries: List[str] = None
 ):
     """
-    Function to run the complete pipeline in a Jupyter notebook environment
+    Function to run the complete pipeline in a Jupyter notebook environment on H100 GPU
     with progress bars and timing for each step.
     """
     if queries is None:
