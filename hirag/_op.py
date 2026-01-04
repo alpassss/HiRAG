@@ -343,6 +343,10 @@ async def extract_hierarchical_entities(
     continue_prompt = PROMPTS["entiti_continue_extraction"]     # means low quality in the last extraction
     if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]       # judge if there are still entities still need to be extracted
 
+    if not ordered_chunks:  # Handle empty chunks
+        logger.warning("No chunks to process for entity extraction")
+        return None
+
     already_processed = 0
     already_entities = 0
     already_relations = 0
@@ -433,7 +437,13 @@ async def extract_hierarchical_entities(
         for k, v in item[0].items():
             value = v[0]
             all_entities[k] = v[0]
+    
     context_entities = {key[0]: list(x[0].keys()) for key, x in zip(ordered_chunks, entity_results)}
+    
+    # Check if no entities were extracted
+    if not all_entities:
+        logger.warning("No entities extracted from any chunks, skipping clustering and returning early")
+        return None
     
     # fetch embeddings
     entity_discriptions = [v["description"] for k, v in all_entities.items()]

@@ -26,16 +26,21 @@ except Exception as e:
     LLM_MODEL_AVAILABLE = False
 
 class LocalLLM:
-    def __init__(self, model_name: str = "microsoft/DialoGPT-small"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-8B"):
         self.model_name = model_name
         self.generator = None
         self.tokenizer = None
         
         if LLM_MODEL_AVAILABLE:
             try:
-                # Try to load a lightweight model
+                # Load Qwen3 model with proper settings for H100
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-                self.generator = AutoModelForCausalLM.from_pretrained(model_name)
+                self.generator = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    trust_remote_code=True
+                )
                 
                 # Add padding token if it doesn't exist
                 if self.tokenizer.pad_token is None:
@@ -45,39 +50,68 @@ class LocalLLM:
                 self.generator = None
                 self.tokenizer = None
 
-    async def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> str:
+    async def generate(self, prompt: str, system_prompt: Optional[str] = None, history_messages: List[Dict] = None, **kwargs) -> str:
         """
         Generate text using local model or mock response
         """
         if self.generator is not None and self.tokenizer is not None:
             try:
-                # Combine system prompt and user prompt if system prompt exists
-                full_prompt = prompt
+                # Prepare messages for Qwen3 chat format
+                messages = []
                 if system_prompt:
-                    full_prompt = f"{system_prompt}\n\n{prompt}"
+                    messages.append({"role": "system", "content": system_prompt})
                 
-                inputs = self.tokenizer.encode(full_prompt, return_tensors="pt", truncation=True, max_length=512)
+                # Add history messages if provided
+                if history_messages:
+                    messages.extend(history_messages)
                 
-                with torch.no_grad():
-                    outputs = self.generator.generate(
-                        inputs, 
-                        max_length=min(inputs.shape[1] + 150, 1024),
-                        num_return_sequences=1,
-                        do_sample=True,
-                        temperature=0.7,
-                        pad_token_id=self.tokenizer.eos_token_id
-                    )
+                # Add current user prompt
+                messages.append({"role": "user", "content": prompt})
                 
-                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                # Use Qwen3's chat template with thinking enabled
+                text = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=True  # Enable Qwen3's thinking mode
+                )
                 
-                # Extract only the generated part (after the original prompt)
-                if response.startswith(full_prompt):
-                    response = response[len(full_prompt):].strip()
-                else:
-                    # If the model didn't generate after the prompt, return the last part
-                    response = response.split(full_prompt)[-1].strip()
+                # Tokenize the input
+                model_inputs = self.tokenizer([text], return_tensors="pt")
                 
-                return response if response else "I understand your query, but I cannot provide a detailed response."
+                # Move to model device
+                model_inputs = {k: v.to(self.generator.device) for k, v in model_inputs.items()}
+                
+                # Generate response with appropriate parameters for entity extraction
+                max_new_tokens = kwargs.get("max_tokens", 1024)
+                temperature = kwargs.get("temperature", 0.7)
+                top_p = kwargs.get("top_p", 0.9)
+                
+                generated_ids = self.generator.generate(
+                    **model_inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+                
+                # Decode only the newly generated tokens
+                output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+                
+                # Parse thinking content if present (Qwen3 uses 151668 as the thinking separator token)
+                try:
+                    # rindex finding 151668 (thinking separator token)
+                    index = len(output_ids) - output_ids[::-1].index(151668)
+                    thinking_content = self.tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
+                    content = self.tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+                except ValueError:
+                    # If no thinking content found, just decode normally
+                    content = self.tokenizer.decode(output_ids, skip_special_tokens=True).strip("\n")
+                
+                # Return the actual content (not the thinking part)
+                return content if content else "I understand your query, but I cannot provide a detailed response."
             except Exception as e:
                 logger.warning(f"Local model generation failed: {e}, using mock response")
         

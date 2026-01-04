@@ -94,6 +94,13 @@ def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0)
 def perform_clustering(
     embeddings: np.ndarray, dim: int, threshold: float, verbose: bool = False
 ) -> List[np.ndarray]:
+    if len(embeddings) == 0:
+        # Return empty clusters if no embeddings are provided
+        return []
+    if len(embeddings) == 1:
+        # Handle single embedding case
+        return [np.array([0])]
+        
     reduced_embeddings_global = global_cluster_embeddings(embeddings, min(dim, len(embeddings) -2))
     global_clusters, n_global_clusters = GMM_cluster(     # (num, 2)
         reduced_embeddings_global, threshold
@@ -200,6 +207,9 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
         use_llm_func: callable = global_config["best_model_func"]
         # Get the embeddings from the nodes
         nodes = list(entities.values())
+        if len(nodes) == 0:
+            # Return the initial nodes list if there are no entities to cluster
+            return [[]]  # Return a list containing an empty list to indicate no clusters
         embeddings = np.array([x["embedding"] for x in nodes])
         
         hierarchical_clusters = [nodes]
@@ -345,6 +355,10 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                     seen.add(entity_name)
                     unique_nodes.append(item)
             nodes = unique_nodes
+            if len(nodes) == 0:
+                # If no nodes remain after deduplication, break the loop
+                logging.info(f"[Stop Clustering at Layer{layer} with entity num 0]")
+                break
             embeddings = np.array([x["embedding"] for x in unique_nodes])
             # stop if the number of deduplicated cluster is too small
             if len(embeddings) <= 2:
