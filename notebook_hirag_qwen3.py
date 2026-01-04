@@ -67,7 +67,7 @@ NUM_CONTEXTS_TO_LOAD = None  # None = load all, or set to a number like 100 for 
 
 # GPU configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TORCH_DTYPE = torch.bfloat16  # Use bfloat16 for H100
+TORCH_DTYPE = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16  # Use bfloat16 for H100/A100, float16 for older GPUs
 
 # Query configuration for testing
 TEST_QUERY = "What are the main concepts discussed in computer science?"
@@ -181,31 +181,39 @@ async def qwen3_embedding(texts: List[str]) -> np.ndarray:
     # Process in batches to manage memory
     all_embeddings = []
     
-    with torch.no_grad():
-        for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-            batch_texts = texts[i:i + EMBEDDING_BATCH_SIZE]
-            
-            # Tokenize
-            inputs = embedding_tokenizer(
-                batch_texts,
-                padding=True,
-                truncation=True,
-                max_length=MAX_TOKEN_SIZE,
-                return_tensors="pt"
-            ).to(DEVICE)
-            
-            # Generate embeddings
-            outputs = embedding_model(**inputs)
-            
-            # Use mean pooling on the last hidden state
-            embeddings = outputs.last_hidden_state.mean(dim=1)
-            
-            # Move to CPU and convert to numpy
-            embeddings = embeddings.cpu().numpy()
-            all_embeddings.append(embeddings)
-    
-    # Concatenate all batches
-    return np.vstack(all_embeddings)
+    try:
+        with torch.no_grad():
+            for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+                batch_texts = texts[i:i + EMBEDDING_BATCH_SIZE]
+                
+                # Tokenize
+                inputs = embedding_tokenizer(
+                    batch_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=MAX_TOKEN_SIZE,
+                    return_tensors="pt"
+                ).to(DEVICE)
+                
+                # Generate embeddings
+                outputs = embedding_model(**inputs)
+                
+                # Use mean pooling on the last hidden state
+                embeddings = outputs.last_hidden_state.mean(dim=1)
+                
+                # Move to CPU and convert to numpy
+                embeddings = embeddings.cpu().numpy()
+                all_embeddings.append(embeddings)
+                
+                # Clear GPU cache periodically
+                if i % (EMBEDDING_BATCH_SIZE * 10) == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        # Concatenate all batches
+        return np.vstack(all_embeddings)
+    except Exception as e:
+        logger.error(f"Error in embedding generation: {e}")
+        raise
 
 # ============================================================================
 # Define LLM function for HiRAG
@@ -219,60 +227,69 @@ async def qwen3_llm_if_cache(
 ) -> str:
     """Generate text using Qwen3-8B-Base model with caching"""
     
-    # Build the full prompt
-    full_prompt = ""
-    if system_prompt:
-        full_prompt += f"{system_prompt}\n\n"
-    
-    # Add history messages
-    for msg in history_messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        full_prompt += f"{role}: {content}\n"
-    
-    # Add current prompt
-    full_prompt += f"user: {prompt}\nassistant:"
-    
-    # Check cache
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
-    
-    if hashing_kv is not None:
-        args_hash = compute_args_hash(LLM_MODEL_NAME, messages)
-        if_cache_return = await hashing_kv.get_by_id(args_hash)
-        if if_cache_return is not None:
-            return if_cache_return["return"]
-    
-    # Generate response
-    with torch.no_grad():
-        outputs = text_generator(
-            full_prompt,
-            max_new_tokens=kwargs.get("max_tokens", MAX_NEW_TOKENS),
-            temperature=kwargs.get("temperature", 0.7),
-            top_p=kwargs.get("top_p", 0.95),
-            pad_token_id=llm_tokenizer.eos_token_id,
-        )
-    
-    # Extract generated text
-    generated_text = outputs[0]["generated_text"]
-    
-    # Remove the prompt from the output
-    if generated_text.startswith(full_prompt):
-        response = generated_text[len(full_prompt):].strip()
-    else:
-        response = generated_text.strip()
-    
-    # Cache the response
-    if hashing_kv is not None:
-        await hashing_kv.upsert(
-            {args_hash: {"return": response, "model": LLM_MODEL_NAME}}
-        )
-    
-    return response
+    try:
+        # Build the full prompt
+        full_prompt = ""
+        if system_prompt:
+            full_prompt += f"{system_prompt}\n\n"
+        
+        # Add history messages
+        for msg in history_messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            full_prompt += f"{role}: {content}\n"
+        
+        # Add current prompt
+        full_prompt += f"user: {prompt}\nassistant:"
+        
+        # Check cache
+        hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(history_messages)
+        messages.append({"role": "user", "content": prompt})
+        
+        if hashing_kv is not None:
+            args_hash = compute_args_hash(LLM_MODEL_NAME, messages)
+            if_cache_return = await hashing_kv.get_by_id(args_hash)
+            if if_cache_return is not None:
+                return if_cache_return["return"]
+        
+        # Generate response
+        with torch.no_grad():
+            outputs = text_generator(
+                full_prompt,
+                max_new_tokens=kwargs.get("max_tokens", MAX_NEW_TOKENS),
+                temperature=kwargs.get("temperature", 0.7),
+                top_p=kwargs.get("top_p", 0.95),
+                pad_token_id=llm_tokenizer.eos_token_id,
+            )
+        
+        # Extract generated text
+        generated_text = outputs[0]["generated_text"]
+        
+        # Remove the prompt from the output
+        if generated_text.startswith(full_prompt):
+            response = generated_text[len(full_prompt):].strip()
+        else:
+            response = generated_text.strip()
+        
+        # Cache the response
+        if hashing_kv is not None:
+            await hashing_kv.upsert(
+                {args_hash: {"return": response, "model": LLM_MODEL_NAME}}
+            )
+        
+        # Clear GPU cache after generation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error in LLM generation: {e}")
+        # Return a fallback response
+        return f"Error generating response: {str(e)}"
 
 # ============================================================================
 # Initialize HiRAG system with progress tracking
