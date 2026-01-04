@@ -201,6 +201,10 @@ async def qwen3_embedding(texts: List[str]) -> np.ndarray:
                 # Use mean pooling on the last hidden state
                 embeddings = outputs.last_hidden_state.mean(dim=1)
                 
+                # Convert to float32 if using bfloat16 or float16 (for consistency)
+                if embeddings.dtype in (torch.bfloat16, torch.float16):
+                    embeddings = embeddings.to(torch.float32)
+                
                 # Move to CPU and convert to numpy
                 embeddings = embeddings.cpu().numpy()
                 all_embeddings.append(embeddings)
