@@ -302,7 +302,7 @@ with Timer("Initializing HiRAG system"):
         embedding_func=qwen3_embedding,
         best_model_func=qwen3_llm_if_cache,
         cheap_model_func=qwen3_llm_if_cache,
-        enable_hierachical_mode=ENABLE_HIERARCHICAL_MODE,
+        enable_hierachical_mode=ENABLE_HIERARCHICAL_MODE,  # Note: 'hierachical' spelling is intentional in HiRAG API
         embedding_batch_num=EMBEDDING_BATCH_NUM,
         embedding_func_max_async=EMBEDDING_FUNC_MAX_ASYNC,
         enable_naive_rag=ENABLE_NAIVE_RAG,
