@@ -210,6 +210,23 @@ import nest_asyncio
 nest_asyncio.apply()
 ```
 
+### BFloat16/Float16转换错误
+
+如果遇到"Got unsupported ScalarType BFloat16"错误，此问题已在最新版本中修复。嵌入函数现在会在numpy转换前自动将bfloat16/float16张量转换为float32。
+
+如果使用旧版本，请更新嵌入函数以包含：
+```python
+# 如果使用bfloat16或float16，转换为float32
+if embeddings.dtype in (torch.bfloat16, torch.float16):
+    embeddings = embeddings.to(torch.float32)
+```
+
+### 模型名称混淆
+
+确保使用正确的模型名称：
+- ✅ `Qwen/Qwen3-8B-Base` - 非instruct版本（推荐）
+- ❌ `Qwen/Qwen3-8B` - 不同的模型，可能无法正常工作
+
 ### 模型加载缓慢
 
 首次加载模型会从Hugging Face下载模型。这可能需要几分钟：
